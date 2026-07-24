@@ -76,6 +76,7 @@ pub(crate) fn create_test_config() -> OAuthConfiguration {
         private_cookie_key: Key::from(&[0u8; 64]),
         client_id: "test-client".to_string(),
         client_secret: "test-secret".to_string(),
+        audience: None,
         redirect_uri: "http://localhost:8080/auth/callback".to_string(),
         token_request_redirect_uri: true,
         authorization_endpoint: "http://localhost/auth".to_string(),
@@ -84,9 +85,11 @@ pub(crate) fn create_test_config() -> OAuthConfiguration {
         post_logout_redirect_uri: "/".to_string(),
         scopes: "openid email".to_string(),
         code_challenge_method: CodeChallengeMethod::S256,
-        session_max_age: 30,
-        token_max_age: Some(60),
+        session_max_age_minutes: 30,
+        token_max_age_seconds: Some(60),
         custom_ca_cert: None,
         base_path: "/auth".to_string(),
+        secure_cookies: true,
+        lax_same_site: false,
     }
 }
