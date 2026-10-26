@@ -190,7 +190,7 @@ async fn main() {
 
     // Build the /api reverse-proxy sub-router.
     // The ApiState holds the upstream base URL and a shared reqwest::Client.
-    let api_router = routes::api::router(&args.api_server, None);
+    let api_router = routes::api::router(&args.api_server);
 
     // Build the application router with authentication middleware.
     // /health is registered on the outer router so it is never intercepted

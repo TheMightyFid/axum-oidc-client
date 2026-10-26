@@ -28,7 +28,7 @@
 //! ```rust,no_run
 //! # use axum::Router;
 //! # async fn example() {
-//! let api_router = axum_www_server::routes::api::router("http://api-server", None);
+//! let api_router = axum_www_server::routes::api::router("http://api-server");
 //! let app: Router = Router::new().nest("/api", api_router);
 //! # }
 //! ```
@@ -82,12 +82,10 @@ impl ApiState {
     ///
     /// * `api_server` – Base URL of the upstream API server.  A trailing slash
     ///   is stripped automatically.
-    /// * `client`     – Optional pre-built [`reqwest::Client`].  When `None` a
-    ///   default client is constructed.
-    pub fn new(api_server: &str, client: Option<Client>) -> Self {
+    pub fn new(api_server: &str) -> Self {
         Self {
             api_server: Arc::new(api_server.trim_end_matches('/').to_string()),
-            client: client.unwrap_or_default(),
+            client: Client::default(),
         }
     }
 }
@@ -99,15 +97,14 @@ impl ApiState {
 /// # Arguments
 ///
 /// * `api_server` – Base URL of the upstream API server.
-/// * `client`     – Optional [`reqwest::Client`].  `None` uses the default.
 ///
 /// # Routes registered
 ///
 /// - `GET /me`
 /// - `GET /protected/resource1`
 /// - `GET /protected/resource2`
-pub fn router(api_server: &str, client: Option<Client>) -> Router {
-    let state = ApiState::new(api_server, client);
+pub fn router(api_server: &str) -> Router {
+    let state = ApiState::new(api_server);
 
     Router::new()
         .route("/me", get(me))

@@ -162,38 +162,17 @@ fn deserialize_aud<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    use serde::de::{self, SeqAccess, Visitor};
-    use std::fmt;
-
-    struct AudVisitor;
-
-    impl<'de> Visitor<'de> for AudVisitor {
-        type Value = Vec<String>;
-
-        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("a string or an array of strings")
-        }
-
-        // Single-string form — e.g. Google: "aud": "client-id"
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-            Ok(vec![v.to_owned()])
-        }
-
-        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
-            Ok(vec![v])
-        }
-
-        // Array form — e.g. Keycloak: "aud": ["account", "client-id"]
-        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-            let mut values = Vec::with_capacity(seq.size_hint().unwrap_or(1));
-            while let Some(v) = seq.next_element::<String>()? {
-                values.push(v);
-            }
-            Ok(values)
-        }
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Audience {
+        One(String),
+        Many(Vec<String>),
     }
 
-    deserializer.deserialize_any(AudVisitor)
+    match Audience::deserialize(deserializer)? {
+        Audience::One(audience) => Ok(vec![audience]),
+        Audience::Many(audiences) => Ok(audiences),
+    }
 }
 
 #[cfg(test)]

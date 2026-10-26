@@ -3,16 +3,11 @@ use axum::{
     http::request::Parts,
     response::{IntoResponse, Response},
 };
-use axum_extra::extract::PrivateCookieJar;
 use futures_util::future::BoxFuture;
-use reqwest::Client;
-use std::{ops::Deref, sync::Arc};
+use std::ops::Deref;
 
-use super::shared::extract_and_refresh_session;
-use crate::{
-    authentication::{OAuthConfiguration, SESSION_KEY, cache::AuthCache},
-    errors::Error,
-};
+use super::shared::extract_auth_session;
+use crate::errors::Error;
 
 /// Shared extraction logic for refreshable tokens (access_token and id_token only)
 async fn extract_refreshable_token<F>(
@@ -22,37 +17,9 @@ async fn extract_refreshable_token<F>(
 where
     F: FnOnce(&crate::auth_session::AuthSession) -> String,
 {
-    // Clone everything we need upfront to avoid lifetime issues
-    let cache = parts
-        .extensions
-        .get::<Arc<dyn AuthCache + Send + Sync>>()
-        .cloned();
-
-    let config = parts.extensions.get::<Arc<OAuthConfiguration>>().cloned();
-
-    let client = parts.extensions.get::<Arc<Client>>().cloned();
-
-    let headers = parts.headers.clone();
-
-    // Check cache, config, and client
-    let cache = cache.ok_or(Error::AuthCacheNotConfigured)?;
-
-    let config = config.ok_or(Error::OAuthConfigNotConfigured)?;
-
-    let client = client.ok_or(Error::HttpClientNotConfigured)?;
-
-    // Extract the session ID from the private cookie jar
-    let jar = PrivateCookieJar::from_headers(&headers, config.private_cookie_key.clone());
-
-    let session_id = jar
-        .get(SESSION_KEY)
-        .map(|cookie| cookie.value().to_string())
-        .ok_or(Error::SessionNotFound)?;
-
-    // Use shared logic to extract and refresh session if needed
-    let session = extract_and_refresh_session(&cache, &config, &client, &session_id).await?;
-
-    Ok(field_extractor(&session))
+    extract_auth_session(parts)
+        .await
+        .map(|session| field_extractor(&session))
 }
 
 /// Extractor for access token that can be used in route handlers

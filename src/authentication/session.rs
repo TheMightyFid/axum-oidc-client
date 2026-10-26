@@ -119,7 +119,3 @@ pub struct AuthSession {
     /// Absolute session expiry. This is never extended by ordinary requests.
     pub session_expires_at: DateTime<Local>,
 }
-
-impl AuthSession {
-    // Implement methods for the AuthSession struct
-}
