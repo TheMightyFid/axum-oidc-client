@@ -776,9 +776,51 @@ builder
     .with_end_session_endpoint("...")      // OIDC logout endpoint (only for OIDC-compliant providers)
     .with_post_logout_redirect_uri("...")  // Post-logout redirect (default: "/")
     .with_custom_ca_cert("/path/to/ca.pem") // Custom CA certificate
+    .with_http_client(client)                // Preconfigured reqwest client; takes precedence over custom_ca_cert
     .with_token_max_age(300)               // Token max age in seconds
     .with_base_path("/api/auth")           // Custom base path for auth routes (default: "/auth")
 ```
+
+### Custom HTTP and TLS Configuration
+
+`with_custom_ca_cert` remains the simplest option for one PEM-encoded private CA. When
+your deployment needs embedded roots, multiple private CAs, a custom Rustls configuration,
+or cannot rely on a system CA store, build a `reqwest::Client` in the application and pass it
+to the builder before OIDC discovery. The same client is then used for every library-managed
+OIDC request, including token and refresh-token exchanges.
+
+Add `reqwest` as a direct dependency when using this API so the application can construct the
+client and select its TLS features:
+
+```toml
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+```
+
+```rust,no_run
+use axum_oidc_client::auth_builder::OAuthConfigurationBuilder;
+
+# async fn configure() -> Result<(), Box<dyn std::error::Error>> {
+let oidc_client = reqwest::Client::builder()
+    .add_root_certificate(reqwest::Certificate::from_pem(include_bytes!("corp-ca.pem"))?)
+    .use_rustls_tls()
+    .build()?;
+
+let config = OAuthConfigurationBuilder::default()
+    .with_http_client(oidc_client)
+    .with_issuer("https://id.example.internal").await?
+    .with_client_id("client-id")
+    .with_client_secret("client-secret")
+    .with_redirect_uri("https://app.example.internal/auth/callback")
+    .with_private_cookie_key("secret-key-at-least-32-bytes-long")
+    .with_session_max_age(30)
+    .with_post_logout_redirect_uri("/")
+    .build()?;
+# Ok(())
+# }
+```
+
+For standalone JWT validation, call `JwtConfigurationBuilder::with_http_client` before
+`with_issuer` or `with_jwks_uri`; the configured client is also retained for key rotation.
 
 **Note on `end_session_endpoint`:**
 

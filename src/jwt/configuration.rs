@@ -218,6 +218,8 @@ where
     /// Optional path to a custom CA certificate used when fetching the JWKS.
     /// Kept here so a refresh can use the same TLS trust chain as the initial fetch.
     pub(crate) custom_ca_cert: Option<String>,
+    /// HTTP client supplied by the application for JWKS discovery and refresh.
+    pub(crate) http_client: Option<reqwest::Client>,
     _claims: PhantomData<fn() -> C>,
 }
 
@@ -245,9 +247,12 @@ where
     /// source (i.e. a static key was supplied via `with_decoding_key`).
     pub(crate) async fn refresh_jwks(&self) -> Option<Result<Jwks, Error>> {
         let uri = self.jwks_uri.as_deref()?;
-        let client = match build_http_client(self.custom_ca_cert.as_deref()) {
-            Ok(c) => c,
-            Err(e) => return Some(Err(e)),
+        let client = match &self.http_client {
+            Some(client) => client.clone(),
+            None => match build_http_client(self.custom_ca_cert.as_deref()) {
+                Ok(client) => client,
+                Err(error) => return Some(Err(error)),
+            },
         };
         let result = async {
             client
@@ -298,6 +303,7 @@ where
     jwks_uri: Option<String>,
     validate_exp: bool,
     custom_ca_cert: Option<String>,
+    http_client: Option<reqwest::Client>,
     _claims: PhantomData<fn() -> C>,
 }
 
@@ -312,6 +318,7 @@ impl<C: DeserializeOwned> Default for JwtConfigurationBuilder<C> {
             jwks_uri: None,
             validate_exp: true,
             custom_ca_cert: None,
+            http_client: None,
             _claims: PhantomData,
         }
     }
@@ -354,6 +361,15 @@ impl<C: DeserializeOwned> JwtConfigurationBuilder<C> {
     /// ```
     pub fn with_custom_ca_cert(mut self, path: impl Into<String>) -> Self {
         self.custom_ca_cert = Some(path.into());
+        self
+    }
+
+    /// Use `client` for OIDC discovery, JWKS retrieval, and JWKS refreshes.
+    ///
+    /// The supplied client takes precedence over
+    /// [`with_custom_ca_cert`](Self::with_custom_ca_cert).
+    pub fn with_http_client(mut self, client: reqwest::Client) -> Self {
+        self.http_client = Some(client);
         self
     }
 
@@ -401,7 +417,10 @@ impl<C: DeserializeOwned> JwtConfigurationBuilder<C> {
         let issuer = issuer.trim_end_matches('/');
         let discovery_url = format!("{issuer}/.well-known/openid-configuration");
 
-        let client = build_http_client(self.custom_ca_cert.as_deref())?;
+        let client = match &self.http_client {
+            Some(client) => client.clone(),
+            None => build_http_client(self.custom_ca_cert.as_deref())?,
+        };
 
         let discovery: OidcDiscovery = client
             .get(&discovery_url)
@@ -437,7 +456,10 @@ impl<C: DeserializeOwned> JwtConfigurationBuilder<C> {
     /// Returns [`Error::InvalidResponse`] if the HTTP request fails or the
     /// response cannot be parsed as a JWKS document.
     pub async fn with_jwks_uri(mut self, jwks_uri: &str) -> Result<Self, Error> {
-        let client = build_http_client(self.custom_ca_cert.as_deref())?;
+        let client = match &self.http_client {
+            Some(client) => client.clone(),
+            None => build_http_client(self.custom_ca_cert.as_deref())?,
+        };
 
         let jwks: Jwks = client
             .get(jwks_uri)
@@ -529,6 +551,7 @@ impl<C: DeserializeOwned> JwtConfigurationBuilder<C> {
             issuer: self.issuer,
             jwks_uri: self.jwks_uri,
             custom_ca_cert: self.custom_ca_cert,
+            http_client: self.http_client,
             _claims: PhantomData,
         })
     }
@@ -707,5 +730,44 @@ mod tests {
             }
             Err(e) => panic!("unexpected error variant: {e}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_with_http_client_is_used_for_jwks_requests() {
+        let mut server = mockito::Server::new_async().await;
+        let base = server.url();
+        let jwks = serde_json::json!({ "keys": [] });
+
+        let mock = server
+            .mock("GET", "/jwks")
+            .match_header("x-oidc-client", "configured")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(jwks.to_string())
+            .create_async()
+            .await;
+
+        let result = JwtConfigurationBuilder::<TestClaims>::new()
+            .with_http_client(
+                reqwest::Client::builder()
+                    .default_headers(
+                        [("x-oidc-client", "configured")]
+                            .into_iter()
+                            .map(|(name, value)| {
+                                (
+                                    reqwest::header::HeaderName::from_static(name),
+                                    reqwest::header::HeaderValue::from_static(value),
+                                )
+                            })
+                            .collect(),
+                    )
+                    .build()
+                    .expect("configured client"),
+            )
+            .with_jwks_uri(&format!("{base}/jwks"))
+            .await;
+
+        assert!(matches!(result, Ok(_)));
+        mock.assert_async().await;
     }
 }

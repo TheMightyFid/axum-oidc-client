@@ -294,6 +294,8 @@ pub struct OAuthConfiguration {
     pub code_challenge_method: CodeChallengeMethod,
     /// Optional path to custom CA certificate file
     pub custom_ca_cert: Option<String>,
+    /// HTTP client supplied through [`builder::OAuthConfigurationBuilder::with_http_client`].
+    pub(crate) http_client: Option<Client>,
     /// Maximum session age in seconds
     pub session_max_age_minutes: i64,
     /// Optional maximum token age in seconds
@@ -446,10 +448,10 @@ impl AuthenticationLayer {
         cache: Arc<dyn AuthCache + Send + Sync>,
         logout_handler: Arc<dyn LogoutHandler>,
     ) -> Self {
-        let oauth_client = Arc::new(
+        let oauth_client = Arc::new(configuration.http_client.clone().unwrap_or_else(|| {
             build_http_client(configuration.custom_ca_cert.as_deref())
-                .expect("failed to build HTTP client"),
-        );
+                .expect("failed to build HTTP client")
+        }));
         Self {
             configuration,
             cache,

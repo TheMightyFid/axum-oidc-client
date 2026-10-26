@@ -54,6 +54,7 @@
 use std::fmt::Display;
 
 use axum_extra::extract::cookie::Key;
+use reqwest::Client;
 use serde::Deserialize;
 
 use crate::authentication::{CodeChallengeMethod, OAuthConfiguration};
@@ -210,6 +211,8 @@ pub struct OAuthConfigurationBuilder {
     pub code_challenge_method: CodeChallengeMethod,
     /// Optional path to custom CA certificate
     pub custom_ca_cert: Option<String>,
+    /// HTTP client used for all OIDC requests when supplied by the application.
+    http_client: Option<Client>,
     /// Maximum session age in minutes
     pub session_max_age_minutes: Option<i64>,
     /// Maximum token age in minutes
@@ -250,6 +253,7 @@ impl Default for OAuthConfigurationBuilder {
             scopes: Scopes::default(),
             code_challenge_method: CodeChallengeMethod::default(),
             custom_ca_cert: None,
+            http_client: None,
             session_max_age_minutes: None,
             token_max_age_seconds: None,
             base_path: None,
@@ -326,7 +330,10 @@ impl OAuthConfigurationBuilder {
         let issuer = issuer.trim_end_matches('/');
         let discovery_url = format!("{}/.well-known/openid-configuration", issuer);
 
-        let client = build_http_client(self.custom_ca_cert.as_deref())?;
+        let client = match &self.http_client {
+            Some(client) => client.clone(),
+            None => build_http_client(self.custom_ca_cert.as_deref())?,
+        };
         let response = client
             .get(&discovery_url)
             .send()
@@ -801,6 +808,18 @@ impl OAuthConfigurationBuilder {
         }
     }
 
+    /// Use `client` for OIDC discovery and all authentication token requests.
+    ///
+    /// This is useful when the provider uses a private CA or when the
+    /// application needs to set proxy, timeout, or TLS policy centrally. The
+    /// supplied client takes precedence over [`with_custom_ca_cert`](Self::with_custom_ca_cert).
+    pub fn with_http_client(self, client: Client) -> Self {
+        Self {
+            http_client: Some(client),
+            ..self
+        }
+    }
+
     /// Set the maximum session age in minutes.
     ///
     /// Sessions older than this will be considered expired and require
@@ -967,6 +986,7 @@ impl OAuthConfigurationBuilder {
             scopes: self.scopes.0.join(" "),
             code_challenge_method: self.code_challenge_method,
             custom_ca_cert: self.custom_ca_cert,
+            http_client: self.http_client,
             base_path: self.base_path.unwrap_or_else(|| "/auth".to_string()),
             token_request_redirect_uri: self.token_request_redirect_uri,
             secure_cookies: self.secure_cookies,
@@ -1058,6 +1078,51 @@ mod tests {
             builder.end_session_endpoint.as_deref(),
             Some(format!("{base}/oauth2/logout").as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn test_with_http_client_is_used_for_discovery() {
+        let mut server = mockito::Server::new_async().await;
+        let base = server.url();
+        let body = discovery_json(
+            "https://provider/auth",
+            "https://provider/token",
+            None,
+            None,
+            None,
+        );
+
+        let mock = server
+            .mock("GET", "/.well-known/openid-configuration")
+            .match_header("x-oidc-client", "configured")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        OAuthConfigurationBuilder::default()
+            .with_http_client(
+                Client::builder()
+                    .default_headers(
+                        [("x-oidc-client", "configured")]
+                            .into_iter()
+                            .map(|(name, value)| {
+                                (
+                                    reqwest::header::HeaderName::from_static(name),
+                                    reqwest::header::HeaderValue::from_static(value),
+                                )
+                            })
+                            .collect(),
+                    )
+                    .build()
+                    .expect("configured client"),
+            )
+            .with_issuer(&base)
+            .await
+            .expect("discovery should use the configured client");
+
+        mock.assert_async().await;
     }
 
     #[tokio::test]

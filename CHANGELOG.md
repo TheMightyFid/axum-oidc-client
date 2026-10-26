@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`OAuthConfigurationBuilder::with_http_client(reqwest::Client)`**: supplies one preconfigured client for OIDC discovery, the authorization-code exchange, and refresh-token exchanges.
+- **`JwtConfigurationBuilder::with_http_client(reqwest::Client)`**: supplies one preconfigured client for OIDC discovery, initial JWKS retrieval, and JWKS refreshes.
+
+### Migration
+
+- Existing `with_custom_ca_cert(path)` users require no changes. Use `with_http_client` instead when the application must control the complete reqwest TLS configuration, such as adding embedded or multiple private roots, configuring a custom Rustls client, or running without a system CA store. The supplied client takes precedence over `with_custom_ca_cert`.
+
 ## [0.7.0] - 2026-06-04
 
 ### Added
