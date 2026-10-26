@@ -310,6 +310,18 @@ pub struct OAuthConfiguration {
     ///
     /// `false` (default) uses Strict SameSite policy. Set to `true` to use Lax.
     pub lax_same_site: bool,
+    /// Whether the session cookie is a browser-session cookie.
+    ///
+    /// `false` (default) sets `Max-Age` on the cookie so it persists across
+    /// browser restarts. Set to `true` to omit `Max-Age`/`Expires` entirely,
+    /// making it a session cookie that the browser drops when it closes.
+    pub session_cookie: bool,
+    /// Whether to send `prompt=consent` on the authorization request.
+    ///
+    /// `true` (default) forces the provider to re-prompt for consent on every
+    /// authorization request. Set to `false` to omit it, allowing silent SSO
+    /// reuse of an existing provider session.
+    pub prompt_consent: bool,
 }
 
 /// Session cookie key name.

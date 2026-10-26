@@ -91,5 +91,7 @@ pub(crate) fn create_test_config() -> OAuthConfiguration {
         base_path: "/auth".to_string(),
         secure_cookies: true,
         lax_same_site: false,
+        session_cookie: false,
+        prompt_consent: false,
     }
 }
