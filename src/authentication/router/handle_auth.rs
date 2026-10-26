@@ -9,6 +9,10 @@ use crate::{
     errors::Error,
 };
 
+pub(super) fn is_safe_post_login_redirect(path: &str) -> bool {
+    path.starts_with('/') && !path.starts_with("//") && !path.contains('\\')
+}
+
 fn create_auth_request(
     configuration: &OAuthConfiguration,
     code_challenge: &Challenge,
@@ -73,11 +77,10 @@ pub async fn handle_auth(
     // after the provider round-trip.  The `|` separator never appears in a UUID
     // or a valid relative path, making splitting unambiguous.
     //
-    // Security: only relative paths that start with `/` (but not `//`, which
-    // would be treated as a protocol-relative URL) are accepted.  Anything else
-    // is silently dropped in favour of the default `/` redirect.
+    // Security: only relative paths are accepted. Browsers normalize backslashes
+    // in redirects, so reject them as well as protocol-relative URLs.
     let state_with_redirect = match post_login_redirect {
-        Some(path) if path.starts_with('/') && !path.starts_with("//") => {
+        Some(path) if is_safe_post_login_redirect(&path) => {
             format!("{}|{}", state, path)
         }
         _ => state.clone(),
@@ -170,5 +173,13 @@ mod tests {
 
         assert_eq!(prompt_param(&url).as_deref(), Some("consent"));
         assert!(url.contains("access_type=offline"));
+    }
+
+    #[test]
+    fn post_login_redirect_allows_only_relative_paths() {
+        assert!(is_safe_post_login_redirect("/account?tab=security"));
+        assert!(!is_safe_post_login_redirect("https://attacker.example"));
+        assert!(!is_safe_post_login_redirect("//attacker.example"));
+        assert!(!is_safe_post_login_redirect("/\\attacker.example"));
     }
 }
