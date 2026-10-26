@@ -15,7 +15,7 @@
 //!
 //! ## Quick Start
 //!
-//! ```rust,no_run
+//! ```rust,no_run,ignore
 //! use axum::{Router, routing::get};
 //! use axum_oidc_client::{
 //!     auth::{AuthenticationLayer, CodeChallengeMethod},

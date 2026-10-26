@@ -34,15 +34,15 @@ moka = { version = "0.12", optional = true, features = ["future"] }
 chrono = { version = "0.4", optional = true, features = ["serde"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = { version = "0.1", optional = true }
-html-escape = { version = "0.2", optional = true }
+html-escape = { version = "0.3", optional = true }
 
 # sqlx is pulled in only when at least one sql-cache-* feature is enabled.
 # The runtime is always tokio; the database driver is selected per feature.
 sqlx = { version = "0.9", optional = true, features = ["runtime-tokio", "chrono"] }
 
 # jsonwebtoken and base64 are pulled in only when the `jwt` feature is enabled.
-jsonwebtoken = { version = "10", optional = true, features = ["rust_crypto"] }
-base64 = { version = "0.22", optional = true }
+jsonwebtoken = { version = "11", optional = true, features = ["rust_crypto"] }
+base64 = { version = "0.23", optional = true }
 
 [dev-dependencies]
 mockito = "1"
