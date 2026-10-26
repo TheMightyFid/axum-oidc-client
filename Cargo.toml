@@ -62,7 +62,7 @@ default = ["server", "authentication", "jwt", "moka-cache", "reqwest-rustls-tls"
 
 server = ["axum", "axum-extra", "rand", "chrono", "pkce-std", "time", "uuid", "http", "tower", "tracing", "tokio/full"]
 
-authentication = ["server", "dep:html-escape"]
+authentication = ["server", "jwt", "dep:html-escape"]
 
 # ── reqwest TLS backends ──────────────────────────────────────────────────────
 # Exactly one should be enabled. `reqwest-rustls-tls` is the default.

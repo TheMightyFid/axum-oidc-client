@@ -98,8 +98,7 @@ use std::sync::Arc;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build OAuth configuration
     let config = OAuthConfigurationBuilder::default()
-        .with_authorization_endpoint("https://accounts.google.com/o/oauth2/auth")
-        .with_token_endpoint("https://oauth2.googleapis.com/token")
+        .with_issuer("https://accounts.google.com").await?
         .with_client_id("your-client-id")
         .with_client_secret("your-client-secret")
         .with_audience("https://api.example.com") // Optional: request an API/resource audience
@@ -189,6 +188,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+## Migration: OIDC Session Validation
+
+The authentication middleware now validates ID tokens before creating a browser
+session. Applications using `AuthenticationLayer` must configure the provider
+through OIDC discovery so the middleware can obtain the canonical issuer and
+signing keys:
+
+```rust
+let config = OAuthConfigurationBuilder::default()
+    .with_issuer("https://issuer.example.com").await?
+    .with_client_id("your-client-id")
+    .with_client_secret("your-client-secret")
+    .with_redirect_uri("https://app.example.com/auth/callback")
+    .with_private_cookie_key("a-strong-random-secret-at-least-32-bytes")
+    .with_post_logout_redirect_uri("https://app.example.com/")
+    .with_session_max_age(30)
+    .build()?;
+```
+
+Replace manual `.with_authorization_endpoint(...)` and
+`.with_token_endpoint(...)` configuration with `.with_issuer(...)`. Explicit
+endpoint setters may still override discovered endpoints for provider-specific
+deployments, but ID-token validation requires the discovery document to provide
+both `issuer` and `jwks_uri`.
+
+During login, the middleware now issues a short-lived private transaction
+cookie. It binds the callback `state` and ID-token `nonce` to the browser that
+started the authorization flow. Ensure your reverse proxy preserves
+`Set-Cookie` headers and serves the application over HTTPS when
+`secure_cookies` is enabled (the default).
 
 ## Automatic ID Token and Access Token Refresh
 

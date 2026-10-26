@@ -52,7 +52,7 @@ impl LogoutHandler for DefaultLogoutHandler {
         <head>
           <meta http-equiv=\"Refresh\" content=\"0; URL={}\" />
         </head>",
-                    &configuration.post_logout_redirect_uri
+                    configuration.post_logout_redirect_uri
                 )),
             )
                 .into_response())

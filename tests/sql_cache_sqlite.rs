@@ -9,7 +9,7 @@
 //! - Concurrent access safety
 //! - Key-prefix isolation (cv: vs session: keys do not collide)
 //! - Custom table name
-//! - Error paths (empty connection string, bad scheme)
+//! - Error paths (empty connection string, bad scheme, unsafe table name)
 //!
 //! Run with:
 //! ```bash
@@ -62,7 +62,8 @@ fn make_session(id_token: &str) -> AuthSession {
         token_type: "Bearer".to_string(),
         refresh_token: Some(format!("refresh_{id_token}")),
         scope: Some("openid email".to_string()),
-        expires: None, // no expiry — SQL backend derives expires_at from session
+        expires: None,
+        session_expires_at: chrono::Local::now() + chrono::Duration::hours(1),
     }
 }
 
@@ -515,6 +516,20 @@ async fn new_returns_error_for_unrecognised_scheme() {
     );
 }
 
+#[tokio::test]
+async fn new_rejects_unsafe_table_name() {
+    let config = SqlCacheConfig {
+        connection_string: "sqlite://:memory:".to_string(),
+        table_name: "oidc_cache; DROP TABLE users".to_string(),
+        ..Default::default()
+    };
+
+    let error = SqlAuthCache::new(config)
+        .await
+        .expect_err("unsafe table name must be rejected");
+    assert!(error.to_string().contains("table_name"));
+}
+
 // ─── Two-tier integration: SQLite L2 + Moka L1 ───────────────────────────────
 
 #[tokio::test]
@@ -579,7 +594,7 @@ async fn two_tier_cache_with_sqlite_l2() {
 }
 
 #[tokio::test]
-async fn two_tier_code_verifier_stored_only_in_l1() {
+async fn two_tier_code_verifier_is_stored_in_shared_l2() {
     use axum_oidc_client::cache::{TwoTierAuthCache, config::TwoTierCacheConfig};
 
     let sql_cache = Arc::new(make_cache().await);
@@ -596,16 +611,17 @@ async fn two_tier_code_verifier_stored_only_in_l1() {
         .await
         .expect("set_code_verifier via two-tier failed");
 
-    // In two-tier mode, code verifiers are stored exclusively in L1 (Moka).
-    // Therefore the SQLite L2 should NOT have this entry.
+    // Persist the verifier in L2 so a callback handled by another instance can
+    // complete the authorization-code exchange.
     let in_sql = sql_cache_ref
         .get_code_verifier("pkce-state")
         .await
         .expect("direct SQL get_code_verifier failed");
 
     assert_eq!(
-        in_sql, None,
-        "code verifier should NOT be written to the SQL L2 backend"
+        in_sql,
+        Some("pkce-verifier".to_string()),
+        "code verifier must be written to the SQL L2 backend for cross-instance callbacks"
     );
 
     // But reading through the two-tier cache should find it in L1.

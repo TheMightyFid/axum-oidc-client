@@ -16,6 +16,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Existing `with_custom_ca_cert(path)` users require no changes. Use `with_http_client` instead when the application must control the complete reqwest TLS configuration, such as adding embedded or multiple private roots, configuring a custom Rustls client, or running without a system CA store. The supplied client takes precedence over `with_custom_ca_cert`.
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+- Preserve PKCE authorization transactions when the callback is handled by another application instance using a two-tier cache
+- Enforce absolute authentication-session expiry instead of extending sessions indefinitely on ordinary requests
+
+### Security
+
+- Validate OIDC ID-token signatures, issuer, audience, authorized party, expiry, and nonce before creating an application session
+- Bind authorization callbacks to the browser that initiated login to prevent login CSRF
+- Reject unsafe SQL cache table identifiers before generating database queries
+
+### Breaking
+
+- Require OIDC issuer discovery for authenticated OIDC callbacks; applications configured only with manual authorization and token endpoints must add `.with_issuer("https://issuer.example")` before calling `build()`
+
 ## [0.7.0] - 2026-06-04
 
 ### Added

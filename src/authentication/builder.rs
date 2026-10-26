@@ -52,6 +52,7 @@
 //! ```
 
 use std::fmt::Display;
+use std::sync::Arc;
 
 use axum_extra::extract::cookie::Key;
 use reqwest::Client;
@@ -73,6 +74,10 @@ use crate::http_client::build_http_client;
 /// Reference: [OpenID Connect Discovery 1.0 §3](https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata)
 #[derive(Debug, Deserialize)]
 struct OidcDiscovery {
+    #[serde(default)]
+    issuer: Option<String>,
+    #[serde(default)]
+    jwks_uri: Option<String>,
     /// `authorization_endpoint` — URL of the authorization server's
     /// authorization endpoint.  Maps to
     /// [`OAuthConfigurationBuilder::authorization_endpoint`].
@@ -235,6 +240,8 @@ pub struct OAuthConfigurationBuilder {
     /// Tracks whether `with_scopes` was called explicitly so that `with_issuer`
     /// knows not to overwrite the scopes with the discovered values.
     scopes_explicit: bool,
+    issuer: Option<String>,
+    id_token_jwks: Option<crate::jwt::Jwks>,
 }
 
 impl Default for OAuthConfigurationBuilder {
@@ -263,6 +270,8 @@ impl Default for OAuthConfigurationBuilder {
             prompt_consent: true,
             code_challenge_method_explicit: false,
             scopes_explicit: false,
+            issuer: None,
+            id_token_jwks: None,
         }
     }
 }
@@ -398,12 +407,18 @@ impl OAuthConfigurationBuilder {
             self.code_challenge_method
         };
 
+        let id_token_jwks = match doc.jwks_uri.as_deref() {
+            Some(jwks_uri) => Some(crate::jwt::Jwks::fetch_with_client(jwks_uri, &client).await?),
+            None => None,
+        };
         Ok(Self {
             authorization_endpoint,
             token_endpoint,
             end_session_endpoint,
             scopes,
             code_challenge_method,
+            issuer: doc.issuer,
+            id_token_jwks,
             ..self
         })
     }
@@ -993,6 +1008,8 @@ impl OAuthConfigurationBuilder {
             lax_same_site: self.lax_same_site,
             session_cookie: self.session_cookie,
             prompt_consent: self.prompt_consent,
+            issuer: self.issuer,
+            id_token_jwks: self.id_token_jwks.map(Arc::new),
         };
         Ok(layer)
     }

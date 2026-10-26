@@ -94,5 +94,7 @@ pub(crate) fn create_test_config() -> OAuthConfiguration {
         lax_same_site: false,
         session_cookie: false,
         prompt_consent: false,
+        issuer: None,
+        id_token_jwks: None,
     }
 }

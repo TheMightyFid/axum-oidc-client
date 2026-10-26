@@ -90,6 +90,9 @@ pub async fn extract_and_refresh_session(
 
     // Check if the token is expired
     let now = Local::now();
+    if session.session_expires_at <= now {
+        return Err(Error::SessionExpired);
+    }
     if session.expires.map(|exp| exp <= now).unwrap_or(false) {
         // If no refresh token is present, we cannot refresh — treat as expired
         if session.refresh_token.is_none() {
@@ -120,9 +123,10 @@ pub async fn extract_and_refresh_session(
 
                 // Calculate new expiration time — if both are absent, leave the
                 // existing value untouched so the session keeps whatever expiry it had
-                if let Some(new_expires) =
-                    calculate_token_expiration(refresh_response.expires_in, config.token_max_age_seconds)
-                {
+                if let Some(new_expires) = calculate_token_expiration(
+                    refresh_response.expires_in,
+                    config.token_max_age_seconds,
+                ) {
                     session.expires = Some(new_expires);
                 }
 

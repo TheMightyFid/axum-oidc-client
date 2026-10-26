@@ -10,6 +10,8 @@
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use time::Duration;
 
+use crate::authentication::AUTH_TRANSACTION_KEY;
+
 /// Builds a session cookie with the standard authentication attributes:
 /// `path=/`, `HttpOnly`, `SameSite` (Lax or Strict), and `Secure`.
 ///
@@ -43,6 +45,27 @@ pub(crate) fn build_session_cookie(
 
     if let Some(duration) = max_age {
         builder = builder.max_age(duration);
+    }
+
+    builder.into()
+}
+
+pub(crate) fn build_transaction_cookie(
+    value: Option<String>,
+    secure_cookies: bool,
+) -> Cookie<'static> {
+    let has_value = value.is_some();
+    let mut builder = match value {
+        Some(value) => Cookie::build((AUTH_TRANSACTION_KEY, value)),
+        None => Cookie::build(AUTH_TRANSACTION_KEY),
+    }
+    .path("/")
+    .http_only(true)
+    .same_site(SameSite::Lax)
+    .secure(secure_cookies);
+
+    if has_value {
+        builder = builder.max_age(Duration::minutes(5));
     }
 
     builder.into()

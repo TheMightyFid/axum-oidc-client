@@ -1,4 +1,5 @@
 use axum::response::{IntoResponse, Redirect, Response};
+use axum_extra::extract::{PrivateCookieJar, cookie::Key};
 use pkce_std::{Challenge, Code, Length, Method};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -12,6 +13,7 @@ fn create_auth_request(
     configuration: &OAuthConfiguration,
     code_challenge: &Challenge,
     state: &str,
+    nonce: &str,
 ) -> Result<String, Error> {
     let OAuthConfiguration {
         client_id,
@@ -32,6 +34,7 @@ fn create_auth_request(
         ("redirect_uri", redirect_uri.as_str()),
         ("access_type", "offline"),
         ("state", state),
+        ("nonce", nonce),
         ("scope", scopes.as_str()),
         ("code_challenge", code_challenge.as_str()),
         ("code_challenge_method", code_challenge_method.as_str()),
@@ -56,6 +59,7 @@ pub async fn handle_auth(
     configuration: Arc<OAuthConfiguration>,
     cache: Arc<dyn AuthCache + Send + Sync>,
     post_login_redirect: Option<String>,
+    jar: PrivateCookieJar<Key>,
 ) -> Result<Response, Error> {
     let code_challenge_method: Method = configuration.code_challenge_method.to_owned().into();
     let (code_verifier, code_challenge) =
@@ -63,6 +67,7 @@ pub async fn handle_auth(
 
     let verifier = code_verifier.get().to_string();
     let state = Uuid::new_v4().to_string();
+    let nonce = Uuid::new_v4().to_string();
 
     // Encode a safe redirect path into the state so the callback can recover it
     // after the provider round-trip.  The `|` separator never appears in a UUID
@@ -79,9 +84,21 @@ pub async fn handle_auth(
     };
 
     cache.set_code_verifier(&state, &verifier).await?;
-    let url = create_auth_request(&configuration, &code_challenge, &state_with_redirect)?;
+    let url = create_auth_request(
+        &configuration,
+        &code_challenge,
+        &state_with_redirect,
+        &nonce,
+    )?;
 
-    Ok(Redirect::temporary(&url).into_response())
+    // Bind the callback state and nonce to the initiating browser. The cookie is
+    // encrypted by PrivateCookieJar and Lax so it accompanies the IdP redirect.
+    let transaction = format!("{state}:{nonce}");
+    let jar = jar.add(crate::authentication::cookies::build_transaction_cookie(
+        Some(transaction),
+        configuration.secure_cookies,
+    ));
+    Ok((jar, Redirect::temporary(&url)).into_response())
 }
 
 #[cfg(test)]
@@ -96,7 +113,7 @@ mod tests {
         let method: Method = configuration.code_challenge_method.to_owned().into();
         let (_, code_challenge) = Code::generate_using(method, Length::MAX).into_pair();
 
-        let url = create_auth_request(&configuration, &code_challenge, "test-state")
+        let url = create_auth_request(&configuration, &code_challenge, "test-state", "test-nonce")
             .expect("auth URL should be valid");
         let url = reqwest::Url::parse(&url).expect("auth URL should parse");
         let audience = url
@@ -104,6 +121,22 @@ mod tests {
             .find_map(|(key, value)| (key == "audience").then_some(value.into_owned()));
 
         assert_eq!(audience.as_deref(), Some("https://api.example.com"));
+    }
+
+    #[test]
+    fn create_auth_request_includes_nonce() {
+        let configuration = create_test_config();
+        let method: Method = configuration.code_challenge_method.to_owned().into();
+        let (_, code_challenge) = Code::generate_using(method, Length::MAX).into_pair();
+
+        let url = create_auth_request(&configuration, &code_challenge, "test-state", "test-nonce")
+            .expect("auth URL should be valid");
+        let url = reqwest::Url::parse(&url).expect("auth URL should parse");
+        let nonce = url
+            .query_pairs()
+            .find_map(|(key, value)| (key == "nonce").then_some(value.into_owned()));
+
+        assert_eq!(nonce.as_deref(), Some("test-nonce"));
     }
 
     fn prompt_param(url: &str) -> Option<String> {
@@ -118,7 +151,7 @@ mod tests {
         let method: Method = configuration.code_challenge_method.to_owned().into();
         let (_, code_challenge) = Code::generate_using(method, Length::MAX).into_pair();
 
-        let url = create_auth_request(&configuration, &code_challenge, "test-state")
+        let url = create_auth_request(&configuration, &code_challenge, "test-state", "test-nonce")
             .expect("auth URL should be valid");
 
         assert_eq!(prompt_param(&url), None);
@@ -132,7 +165,7 @@ mod tests {
         let method: Method = configuration.code_challenge_method.to_owned().into();
         let (_, code_challenge) = Code::generate_using(method, Length::MAX).into_pair();
 
-        let url = create_auth_request(&configuration, &code_challenge, "test-state")
+        let url = create_auth_request(&configuration, &code_challenge, "test-state", "test-nonce")
             .expect("auth URL should be valid");
 
         assert_eq!(prompt_param(&url).as_deref(), Some("consent"));

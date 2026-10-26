@@ -214,8 +214,10 @@ pub struct SqlCacheConfig {
     /// sweeps.  Default: `300` (5 minutes).
     pub cleanup_interval_sec: u64,
 
-    /// Name of the cache table.  Change this if `oidc_cache` conflicts with an
-    /// existing table in your database.  Default: `"oidc_cache"`.
+    /// Name of the cache table. Change this if `oidc_cache` conflicts with an
+    /// existing table in your database. It must be an unquoted ASCII SQL
+    /// identifier: start with a letter or underscore, followed only by letters,
+    /// digits, or underscores. Default: `"oidc_cache"`.
     pub table_name: String,
 
     /// Maximum time (in seconds) to wait when acquiring a connection from the
@@ -305,6 +307,12 @@ impl SqlAuthCache {
     /// - The pool cannot be established within `acquire_timeout_sec`.
     /// - No SQL cache feature flag is enabled.
     pub async fn new(config: SqlCacheConfig) -> Result<Self, Error> {
+        if !is_safe_identifier(&config.table_name) {
+            return Err(Error::CacheError(
+                "SqlCacheConfig.table_name must be an unquoted ASCII SQL identifier".to_string(),
+            ));
+        }
+
         if config.connection_string.is_empty() {
             return Err(Error::CacheError(
                 "SqlCacheConfig.connection_string must not be empty".to_string(),
@@ -359,11 +367,11 @@ impl SqlAuthCache {
                 );
                 let create_index =
                     format!("CREATE INDEX IF NOT EXISTS {index} ON {table} (expires_at)");
-                sqlx::query(&create_table)
+                sqlx::query(dynamic_sql(create_table))
                     .execute(pool)
                     .await
                     .map_err(|e| Error::CacheError(e.to_string()))?;
-                sqlx::query(&create_index)
+                sqlx::query(dynamic_sql(create_index))
                     .execute(pool)
                     .await
                     .map_err(|e| Error::CacheError(e.to_string()))?;
@@ -380,12 +388,12 @@ impl SqlAuthCache {
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
                 );
                 let create_index = format!("CREATE INDEX {index} ON {table} (expires_at)");
-                sqlx::query(&create_table)
+                sqlx::query(dynamic_sql(create_table))
                     .execute(pool)
                     .await
                     .map_err(|e| Error::CacheError(e.to_string()))?;
                 // MySQL errors if the index already exists; ignore that error.
-                let _ = sqlx::query(&create_index).execute(pool).await;
+                let _ = sqlx::query(dynamic_sql(create_index)).execute(pool).await;
             }
 
             #[cfg(feature = "sql-cache-sqlite")]
@@ -399,11 +407,11 @@ impl SqlAuthCache {
                 );
                 let create_index =
                     format!("CREATE INDEX IF NOT EXISTS {index} ON {table} (expires_at)");
-                sqlx::query(&create_table)
+                sqlx::query(dynamic_sql(create_table))
                     .execute(pool)
                     .await
                     .map_err(|e| Error::CacheError(e.to_string()))?;
-                sqlx::query(&create_index)
+                sqlx::query(dynamic_sql(create_index))
                     .execute(pool)
                     .await
                     .map_err(|e| Error::CacheError(e.to_string()))?;
@@ -531,6 +539,18 @@ impl SqlAuthCache {
     }
 }
 
+/// Table names are validated before cache construction, so these generated SQL
+/// statements contain no untrusted SQL fragments.
+fn dynamic_sql(sql: String) -> sqlx::AssertSqlSafe<String> {
+    sqlx::AssertSqlSafe(sql)
+}
+
+fn is_safe_identifier(identifier: &str) -> bool {
+    let mut characters = identifier.chars();
+    matches!(characters.next(), Some(first) if first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
 // ─── AuthCache implementation ─────────────────────────────────────────────────
 
 impl AuthCache for SqlAuthCache {
@@ -550,19 +570,20 @@ impl AuthCache for SqlAuthCache {
             match pool.as_ref() {
                 #[cfg(feature = "sql-cache-postgres")]
                 Pool::Postgres(pool) => {
-                    let row: Option<(String,)> = sqlx::query_as(&queries::select_query(&table))
-                        .bind(&key)
-                        .bind(now)
-                        .fetch_optional(pool)
-                        .await
-                        .map_err(|e| Error::CacheError(e.to_string()))?;
+                    let row: Option<(String,)> =
+                        sqlx::query_as(dynamic_sql(queries::select_query(&table)))
+                            .bind(&key)
+                            .bind(now)
+                            .fetch_optional(pool)
+                            .await
+                            .map_err(|e| Error::CacheError(e.to_string()))?;
                     Ok(row.map(|(v,)| v))
                 }
 
                 #[cfg(feature = "sql-cache-mysql")]
                 Pool::MySql(pool) => {
                     let row: Option<(String,)> =
-                        sqlx::query_as(&queries::mysql_select_query(&table))
+                        sqlx::query_as(dynamic_sql(queries::mysql_select_query(&table)))
                             .bind(&key)
                             .bind(now)
                             .fetch_optional(pool)
@@ -574,7 +595,7 @@ impl AuthCache for SqlAuthCache {
                 #[cfg(feature = "sql-cache-sqlite")]
                 Pool::Sqlite(pool) => {
                     let row: Option<(String,)> =
-                        sqlx::query_as(&queries::sqlite_select_query(&table))
+                        sqlx::query_as(dynamic_sql(queries::sqlite_select_query(&table)))
                             .bind(&key)
                             .bind(now)
                             .fetch_optional(pool)
@@ -601,7 +622,7 @@ impl AuthCache for SqlAuthCache {
             match pool.as_ref() {
                 #[cfg(feature = "sql-cache-postgres")]
                 Pool::Postgres(pool) => {
-                    sqlx::query(&queries::postgres_upsert_query(&table))
+                    sqlx::query(dynamic_sql(queries::postgres_upsert_query(&table)))
                         .bind(&key)
                         .bind(&value)
                         .bind(expires_at)
@@ -612,7 +633,7 @@ impl AuthCache for SqlAuthCache {
 
                 #[cfg(feature = "sql-cache-mysql")]
                 Pool::MySql(pool) => {
-                    sqlx::query(&queries::mysql_upsert_query(&table))
+                    sqlx::query(dynamic_sql(queries::mysql_upsert_query(&table)))
                         .bind(&key)
                         .bind(&value)
                         .bind(expires_at)
@@ -623,7 +644,7 @@ impl AuthCache for SqlAuthCache {
 
                 #[cfg(feature = "sql-cache-sqlite")]
                 Pool::Sqlite(pool) => {
-                    sqlx::query(&queries::sqlite_upsert_query(&table))
+                    sqlx::query(dynamic_sql(queries::sqlite_upsert_query(&table)))
                         .bind(&key)
                         .bind(&value)
                         .bind(expires_at)
@@ -645,7 +666,7 @@ impl AuthCache for SqlAuthCache {
             match pool.as_ref() {
                 #[cfg(feature = "sql-cache-postgres")]
                 Pool::Postgres(pool) => {
-                    sqlx::query(&queries::delete_query(&table))
+                    sqlx::query(dynamic_sql(queries::delete_query(&table)))
                         .bind(&key)
                         .execute(pool)
                         .await
@@ -654,7 +675,7 @@ impl AuthCache for SqlAuthCache {
 
                 #[cfg(feature = "sql-cache-mysql")]
                 Pool::MySql(pool) => {
-                    sqlx::query(&queries::mysql_delete_query(&table))
+                    sqlx::query(dynamic_sql(queries::mysql_delete_query(&table)))
                         .bind(&key)
                         .execute(pool)
                         .await
@@ -663,7 +684,7 @@ impl AuthCache for SqlAuthCache {
 
                 #[cfg(feature = "sql-cache-sqlite")]
                 Pool::Sqlite(pool) => {
-                    sqlx::query(&queries::sqlite_delete_query(&table))
+                    sqlx::query(dynamic_sql(queries::sqlite_delete_query(&table)))
                         .bind(&key)
                         .execute(pool)
                         .await
@@ -690,19 +711,20 @@ impl AuthCache for SqlAuthCache {
             let json: Option<String> = match pool.as_ref() {
                 #[cfg(feature = "sql-cache-postgres")]
                 Pool::Postgres(pool) => {
-                    let row: Option<(String,)> = sqlx::query_as(&queries::select_query(&table))
-                        .bind(&key)
-                        .bind(now)
-                        .fetch_optional(pool)
-                        .await
-                        .map_err(|e| Error::CacheError(e.to_string()))?;
+                    let row: Option<(String,)> =
+                        sqlx::query_as(dynamic_sql(queries::select_query(&table)))
+                            .bind(&key)
+                            .bind(now)
+                            .fetch_optional(pool)
+                            .await
+                            .map_err(|e| Error::CacheError(e.to_string()))?;
                     row.map(|(v,)| v)
                 }
 
                 #[cfg(feature = "sql-cache-mysql")]
                 Pool::MySql(pool) => {
                     let row: Option<(String,)> =
-                        sqlx::query_as(&queries::mysql_select_query(&table))
+                        sqlx::query_as(dynamic_sql(queries::mysql_select_query(&table)))
                             .bind(&key)
                             .bind(now)
                             .fetch_optional(pool)
@@ -714,7 +736,7 @@ impl AuthCache for SqlAuthCache {
                 #[cfg(feature = "sql-cache-sqlite")]
                 Pool::Sqlite(pool) => {
                     let row: Option<(String,)> =
-                        sqlx::query_as(&queries::sqlite_select_query(&table))
+                        sqlx::query_as(dynamic_sql(queries::sqlite_select_query(&table)))
                             .bind(&key)
                             .bind(now)
                             .fetch_optional(pool)
@@ -742,14 +764,7 @@ impl AuthCache for SqlAuthCache {
     ) -> BoxFuture<'_, Result<(), Error>> {
         let key = session_key(session_id);
         let table = self.config.table_name.clone();
-        // Derive expires_at from the session's own expiry when available;
-        // fall back to the configured session TTL (from the code-verifier TTL
-        // field is repurposed: the caller ultimately controls this via
-        // session_max_age in OAuthConfigurationBuilder).
-        let expires_at = session
-            .expires
-            .map(|dt| dt.timestamp())
-            .unwrap_or_else(|| SqlAuthCache::expires_at(3600));
+        let expires_at = session.session_expires_at.timestamp();
         let pool = Arc::clone(&self.pool);
 
         Box::pin(async move {
@@ -759,7 +774,7 @@ impl AuthCache for SqlAuthCache {
             match pool.as_ref() {
                 #[cfg(feature = "sql-cache-postgres")]
                 Pool::Postgres(pool) => {
-                    sqlx::query(&queries::postgres_upsert_query(&table))
+                    sqlx::query(dynamic_sql(queries::postgres_upsert_query(&table)))
                         .bind(&key)
                         .bind(&value)
                         .bind(expires_at)
@@ -770,7 +785,7 @@ impl AuthCache for SqlAuthCache {
 
                 #[cfg(feature = "sql-cache-mysql")]
                 Pool::MySql(pool) => {
-                    sqlx::query(&queries::mysql_upsert_query(&table))
+                    sqlx::query(dynamic_sql(queries::mysql_upsert_query(&table)))
                         .bind(&key)
                         .bind(&value)
                         .bind(expires_at)
@@ -781,7 +796,7 @@ impl AuthCache for SqlAuthCache {
 
                 #[cfg(feature = "sql-cache-sqlite")]
                 Pool::Sqlite(pool) => {
-                    sqlx::query(&queries::sqlite_upsert_query(&table))
+                    sqlx::query(dynamic_sql(queries::sqlite_upsert_query(&table)))
                         .bind(&key)
                         .bind(&value)
                         .bind(expires_at)
@@ -803,7 +818,7 @@ impl AuthCache for SqlAuthCache {
             match pool.as_ref() {
                 #[cfg(feature = "sql-cache-postgres")]
                 Pool::Postgres(pool) => {
-                    sqlx::query(&queries::delete_query(&table))
+                    sqlx::query(dynamic_sql(queries::delete_query(&table)))
                         .bind(&key)
                         .execute(pool)
                         .await
@@ -812,7 +827,7 @@ impl AuthCache for SqlAuthCache {
 
                 #[cfg(feature = "sql-cache-mysql")]
                 Pool::MySql(pool) => {
-                    sqlx::query(&queries::mysql_delete_query(&table))
+                    sqlx::query(dynamic_sql(queries::mysql_delete_query(&table)))
                         .bind(&key)
                         .execute(pool)
                         .await
@@ -821,7 +836,7 @@ impl AuthCache for SqlAuthCache {
 
                 #[cfg(feature = "sql-cache-sqlite")]
                 Pool::Sqlite(pool) => {
-                    sqlx::query(&queries::sqlite_delete_query(&table))
+                    sqlx::query(dynamic_sql(queries::sqlite_delete_query(&table)))
                         .bind(&key)
                         .execute(pool)
                         .await
@@ -842,7 +857,7 @@ impl AuthCache for SqlAuthCache {
             match pool.as_ref() {
                 #[cfg(feature = "sql-cache-postgres")]
                 Pool::Postgres(pool) => {
-                    sqlx::query(&queries::extend_query(&table))
+                    sqlx::query(dynamic_sql(queries::extend_query(&table)))
                         .bind(new_expires_at)
                         .bind(&key)
                         .execute(pool)
@@ -852,7 +867,7 @@ impl AuthCache for SqlAuthCache {
 
                 #[cfg(feature = "sql-cache-mysql")]
                 Pool::MySql(pool) => {
-                    sqlx::query(&queries::mysql_extend_query(&table))
+                    sqlx::query(dynamic_sql(queries::mysql_extend_query(&table)))
                         .bind(new_expires_at)
                         .bind(&key)
                         .execute(pool)
@@ -862,7 +877,7 @@ impl AuthCache for SqlAuthCache {
 
                 #[cfg(feature = "sql-cache-sqlite")]
                 Pool::Sqlite(pool) => {
-                    sqlx::query(&queries::sqlite_extend_query(&table))
+                    sqlx::query(dynamic_sql(queries::sqlite_extend_query(&table)))
                         .bind(new_expires_at)
                         .bind(&key)
                         .execute(pool)
@@ -922,6 +937,31 @@ mod tests {
         match result.unwrap_err() {
             Error::CacheError(msg) => assert!(msg.contains("connection_string")),
             other => panic!("unexpected error: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn new_rejects_unsafe_table_name_before_connecting() {
+        let cfg = SqlCacheConfig {
+            connection_string: "not-a-database-url".to_string(),
+            table_name: "oidc_cache; DROP TABLE users".to_string(),
+            ..Default::default()
+        };
+
+        match SqlAuthCache::new(cfg).await.unwrap_err() {
+            Error::CacheError(msg) => assert!(msg.contains("table_name")),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn safe_identifier_validation_is_strict() {
+        for identifier in ["oidc_cache", "_cache2", "Cache_2"] {
+            assert!(is_safe_identifier(identifier));
+        }
+
+        for identifier in ["", "2cache", "cache-name", "schema.cache", "cache name"] {
+            assert!(!is_safe_identifier(identifier));
         }
     }
 

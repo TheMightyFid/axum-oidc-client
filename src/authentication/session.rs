@@ -116,6 +116,8 @@ pub struct AuthSession {
     /// `None` means neither `expires_in` nor `token_max_age` were present at session
     /// creation — in that case the token refresh logic is disabled entirely.
     pub expires: Option<DateTime<Local>>,
+    /// Absolute session expiry. This is never extended by ordinary requests.
+    pub session_expires_at: DateTime<Local>,
 }
 
 impl AuthSession {

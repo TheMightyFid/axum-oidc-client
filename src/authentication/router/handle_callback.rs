@@ -11,9 +11,9 @@ use uuid::Uuid;
 use crate::{
     authentication::{
         cache::AuthCache,
-        cookies::build_session_cookie,
+        cookies::{build_session_cookie, build_transaction_cookie},
         session::AuthSession,
-        {OAuthConfiguration, SESSION_KEY},
+        {AUTH_TRANSACTION_KEY, OAuthConfiguration, SESSION_KEY},
     },
     errors::Error,
 };
@@ -41,6 +41,7 @@ async fn get_auth_tokens(
     configuration: Arc<OAuthConfiguration>,
     cache: Arc<dyn AuthCache + Send + Sync>,
     client: Arc<Client>,
+    transaction: &str,
     uri: &Uri,
 ) -> Result<(AccessTokenResponse, Option<String>), Error> {
     let querystring = uri.query();
@@ -68,6 +69,15 @@ async fn get_auth_tokens(
         token_request_redirect_uri,
         ..
     } = configuration.as_ref();
+
+    let (transaction_state, nonce) = transaction.split_once(':').ok_or_else(|| {
+        Error::InvalidCodeResponse("invalid authorization transaction".to_string())
+    })?;
+    if transaction_state != state_key {
+        return Err(Error::InvalidCodeResponse(
+            "authorization state does not match initiating browser".to_string(),
+        ));
+    }
 
     let verifier = cache
         .get_code_verifier(&state_key)
@@ -114,6 +124,7 @@ async fn get_auth_tokens(
                 .await
                 .map_err(Error::from_request_error)?;
 
+            validate_id_token(&auth_session.id_token, &configuration, nonce)?;
             Ok((auth_session, post_login_redirect))
         }
         status => {
@@ -121,6 +132,45 @@ async fn get_auth_tokens(
             Err(Error::from_status_code(status, err))
         }
     }
+}
+
+fn validate_id_token(
+    token: &str,
+    configuration: &OAuthConfiguration,
+    expected_nonce: &str,
+) -> Result<(), Error> {
+    let issuer = configuration.issuer.as_deref().ok_or_else(|| {
+        Error::InvalidTokenResponse("OIDC issuer is not configured; use with_issuer".to_string())
+    })?;
+    let jwks = configuration.id_token_jwks.as_ref().ok_or_else(|| {
+        Error::InvalidTokenResponse("OIDC JWKS is not configured; use with_issuer".to_string())
+    })?;
+    let header = jsonwebtoken::decode_header(token)
+        .map_err(|e| Error::InvalidTokenResponse(format!("invalid ID-token header: {e}")))?;
+    let kid = header
+        .kid
+        .as_deref()
+        .ok_or_else(|| Error::InvalidTokenResponse("ID token has no key identifier".to_string()))?;
+    let key = jwks
+        .decoding_key_for_kid_and_algorithm(kid, header.alg)
+        .map_err(|e| Error::InvalidTokenResponse(e.to_string()))?;
+    let mut validation = jsonwebtoken::Validation::new(header.alg);
+    validation.set_audience(&[&configuration.client_id]);
+    validation.set_issuer(&[issuer]);
+    let claims = jsonwebtoken::decode::<crate::jwt::OidcClaims>(token, &key, &validation)
+        .map_err(|e| Error::InvalidTokenResponse(format!("ID-token validation failed: {e}")))?
+        .claims;
+    if claims.nonce.as_deref() != Some(expected_nonce) {
+        return Err(Error::InvalidTokenResponse(
+            "ID-token nonce does not match authorization transaction".to_string(),
+        ));
+    }
+    if claims.aud.len() > 1 && claims.azp.as_deref() != Some(&configuration.client_id) {
+        return Err(Error::InvalidTokenResponse(
+            "multi-audience ID token is missing the expected azp claim".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub async fn handle_callback(parts: &mut Parts, uri: Uri) -> Result<Response, Error> {
@@ -147,11 +197,23 @@ pub async fn handle_callback(parts: &mut Parts, uri: Uri) -> Result<Response, Er
     } = configuration.as_ref();
 
     let jar = PrivateCookieJar::from_headers(&parts.headers, private_cookie_key.to_owned());
+    let transaction = jar
+        .get(AUTH_TRANSACTION_KEY)
+        .map(|cookie| cookie.value().to_string())
+        .ok_or_else(|| {
+            Error::InvalidCodeResponse("missing authorization transaction".to_string())
+        })?;
 
     let id = Uuid::new_v4().to_string();
 
-    let (token_response, post_login_redirect) =
-        get_auth_tokens(configuration.clone(), cache.clone(), client.clone(), &uri).await?;
+    let (token_response, post_login_redirect) = get_auth_tokens(
+        configuration.clone(),
+        cache.clone(),
+        client.clone(),
+        &transaction,
+        &uri,
+    )
+    .await?;
 
     cache
         .set_auth_session(&id, AuthSession::new(&token_response, &configuration))
@@ -172,6 +234,7 @@ pub async fn handle_callback(parts: &mut Parts, uri: Uri) -> Result<Response, Er
         configuration.secure_cookies,
         max_age,
     ));
+    let jar = jar.remove(build_transaction_cookie(None, configuration.secure_cookies));
 
     // Belt-and-suspenders validation: re-check the redirect path even though
     // handle_auth already validated it before embedding it in the state.  The

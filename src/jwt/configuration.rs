@@ -106,12 +106,29 @@ pub struct Jwk {
 }
 
 /// A JSON Web Key Set as returned by a JWKS endpoint.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct Jwks {
     pub keys: Vec<Jwk>,
 }
 
 impl Jwks {
+    pub(crate) async fn fetch_with_client(
+        uri: &str,
+        client: &reqwest::Client,
+    ) -> Result<Self, Error> {
+        client
+            .get(uri)
+            .send()
+            .await
+            .map_err(Error::from_request_error)?
+            .error_for_status()
+            .map_err(|e| Error::InvalidResponse(format!("JWKS request to {uri} failed: {e}")))?
+            .json()
+            .await
+            .map_err(|e| {
+                Error::InvalidResponse(format!("Failed to parse JWKS response from {uri}: {e}"))
+            })
+    }
     /// Convert the first usable key in the set into a [`DecodingKey`].
     ///
     /// For RS256/RS384/RS512 keys the RSA components (`n`, `e`) are used.
@@ -144,6 +161,42 @@ impl Jwks {
         }
         // Fall back to the first usable key (provider may not set kid).
         self.first_decoding_key()
+    }
+
+    pub fn decoding_key_for_kid_and_algorithm(
+        &self,
+        kid_header: &str,
+        algorithm: jsonwebtoken::Algorithm,
+    ) -> Result<DecodingKey, Error> {
+        let jwk = self
+            .keys
+            .iter()
+            .find(|jwk| jwk.kid.as_deref() == Some(kid_header))
+            .ok_or_else(|| {
+                Error::InvalidResponse("ID token key identifier is not in the JWKS".to_string())
+            })?;
+        let expected_algorithm = match algorithm {
+            // OIDC discovery must never accept symmetric ID-token signing keys:
+            // a client secret is not a general-purpose issuer signing key.
+            jsonwebtoken::Algorithm::HS256
+            | jsonwebtoken::Algorithm::HS384
+            | jsonwebtoken::Algorithm::HS512 => {
+                return Err(Error::InvalidResponse(
+                    "ID token uses an unsupported symmetric signing algorithm".to_string(),
+                ));
+            }
+            algorithm => format!("{algorithm:?}"),
+        };
+        if jwk
+            .alg
+            .as_deref()
+            .is_some_and(|jwk_algorithm| jwk_algorithm != expected_algorithm)
+        {
+            return Err(Error::InvalidResponse(
+                "ID token signing algorithm does not match the selected JWKS key".to_string(),
+            ));
+        }
+        jwk.to_decoding_key()
     }
 }
 
@@ -460,21 +513,7 @@ impl<C: DeserializeOwned> JwtConfigurationBuilder<C> {
             Some(client) => client.clone(),
             None => build_http_client(self.custom_ca_cert.as_deref())?,
         };
-
-        let jwks: Jwks = client
-            .get(jwks_uri)
-            .send()
-            .await
-            .map_err(Error::from_request_error)?
-            .error_for_status()
-            .map_err(|e| Error::InvalidResponse(format!("JWKS request to {jwks_uri} failed: {e}")))?
-            .json()
-            .await
-            .map_err(|e| {
-                Error::InvalidResponse(format!(
-                    "Failed to parse JWKS response from {jwks_uri}: {e}"
-                ))
-            })?;
+        let jwks = Jwks::fetch_with_client(jwks_uri, &client).await?;
 
         self.jwks = Some(jwks);
         self.jwks_uri = Some(jwks_uri.to_string());
@@ -767,7 +806,7 @@ mod tests {
             .with_jwks_uri(&format!("{base}/jwks"))
             .await;
 
-        assert!(matches!(result, Ok(_)));
+        assert!(result.is_ok());
         mock.assert_async().await;
     }
 }

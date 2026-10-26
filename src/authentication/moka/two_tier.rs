@@ -246,13 +246,13 @@ impl AuthCache for TwoTierAuthCache {
         let key = cv_key(challenge_state);
         let value = code_verifier.to_string();
         Box::pin(async move {
-            // Code verifiers are L1-only when L1 is present: they are
-            // ephemeral, single-use values that do not need to be persisted
-            // to a shared L2 backend.  Fall back to L2 only in L2-only mode.
+            // Persist the verifier whenever L2 exists. The callback can land on
+            // a different application instance than the authorization request.
+            if let Some(l2) = &self.l2 {
+                l2.set_code_verifier(key_tail(&key), &value).await?;
+            }
             if let Some(l1) = &self.l1 {
                 l1.insert(key, L1Entry::CodeVerifier(value)).await;
-            } else if let Some(l2) = &self.l2 {
-                l2.set_code_verifier(key_tail(&key), &value).await?;
             }
 
             Ok(())
@@ -525,6 +525,7 @@ mod tests {
             refresh_token: None,
             scope: Some("openid".to_string()),
             expires: None,
+            session_expires_at: chrono::Local::now() + chrono::Duration::hours(1),
         }
     }
 
@@ -631,11 +632,11 @@ mod tests {
             cache.get_code_verifier("s1").await.unwrap(),
             Some("v1".to_string())
         );
-        // Code verifiers are L1-only when L1 is present; L2 must NOT be written.
+        // Code verifiers are shared so a callback can arrive on another instance.
         assert_eq!(
             stub.get_code_verifier("s1").await.unwrap(),
-            None,
-            "code verifier must NOT be written to L2 when L1 is present"
+            Some("v1".to_string()),
+            "code verifier must be written to L2 when L1 is present"
         );
     }
 

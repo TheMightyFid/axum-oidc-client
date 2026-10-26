@@ -201,6 +201,7 @@ impl AuthSession {
             refresh_token: response.refresh_token.clone(),
             scope: response.scope.clone(),
             expires: calculate_token_expiration(response.expires_in, conf.token_max_age_seconds),
+            session_expires_at: Local::now() + Duration::minutes(conf.session_max_age_minutes),
         }
     }
 }
@@ -324,12 +325,17 @@ pub struct OAuthConfiguration {
     /// authorization request. Set to `false` to omit it, allowing silent SSO
     /// reuse of an existing provider session.
     pub prompt_consent: bool,
+    /// Expected issuer for OIDC ID-token validation.
+    pub issuer: Option<String>,
+    /// Signing keys obtained from the issuer's discovery document.
+    pub id_token_jwks: Option<Arc<crate::jwt::Jwks>>,
 }
 
 /// Session cookie key name.
 ///
 /// This constant defines the name of the cookie used to store the session identifier.
 pub const SESSION_KEY: &str = "AUTH_SESSION";
+pub(crate) const AUTH_TRANSACTION_KEY: &str = "OIDC_TRANSACTION";
 
 /// Trait for handling logout behavior.
 ///
@@ -565,12 +571,14 @@ where
                     .and_then(|map| map.get("redirect").cloned());
 
                 let existing_session_id = session_id.clone();
+                let transaction_jar = jar.clone();
                 Box::pin(async move {
                     Ok(dispatch_auth(
                         configuration,
                         cache,
                         post_login_redirect,
                         existing_session_id,
+                        transaction_jar,
                     )
                     .await)
                 })
@@ -608,6 +616,7 @@ async fn dispatch_auth(
     cache: Arc<dyn AuthCache + Send + Sync>,
     post_login_redirect: Option<String>,
     existing_session_id: Option<String>,
+    jar: PrivateCookieJar<Key>,
 ) -> Response {
     // If the request already carries a valid, live session, do not start a new
     // OIDC round-trip. Restarting the flow for an already-authenticated user
@@ -632,7 +641,7 @@ async fn dispatch_auth(
         return axum::response::Redirect::to(&target).into_response();
     }
 
-    handle_auth(configuration, cache, post_login_redirect)
+    handle_auth(configuration, cache, post_login_redirect, jar)
         .await
         .unwrap_or_else(IntoResponse::into_response)
 }
